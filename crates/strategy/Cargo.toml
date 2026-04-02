@@ -1,0 +1,29 @@
+[package]
+name = "strategy"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+common.path = "../common"
+types.path = "../types"
+config.path = "../config"
+metrics.path = "../metrics"
+apex-core.path = "../core"
+apex-ingress.path = "../ingress"
+solana-sdk.workspace = true
+spl-token.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rust_decimal.workspace = true
+reqwest.workspace = true
+ahash.workspace = true
+dashmap.workspace = true
+smallvec.workspace = true
+crossbeam-channel.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

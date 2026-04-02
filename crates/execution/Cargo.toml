@@ -1,0 +1,28 @@
+[package]
+name = "execution"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+common.path = "../common"
+types.path = "../types"
+config.path = "../config"
+metrics.path = "../metrics"
+apex-core.path = "../core"
+strategy.path = "../strategy"
+safety.path = "../safety"
+jito-integration.path = "../jito-integration"
+solana-sdk.workspace = true
+solana-client.workspace = true
+solana-program.workspace = true
+spl-token.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

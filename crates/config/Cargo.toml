@@ -1,0 +1,15 @@
+[package]
+name = "config"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+common.path = "../common"
+types.path = "../types"
+dotenvy.workspace = true
+config.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+arc-swap.workspace = true
+tokio.workspace = true

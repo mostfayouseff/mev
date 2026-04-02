@@ -1,0 +1,97 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/common",
+    "crates/types",
+    "crates/config",
+    "crates/metrics",
+    "crates/ingress",
+    "crates/core",
+    "crates/strategy",
+    "crates/safety",
+    "crates/execution",
+    "crates/jito-integration",
+    "tests",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Apex-MEV Team"]
+license = "MIT"
+
+[workspace.dependencies]
+# Solana SDK — use latest stable 2.x ecosystem
+solana-sdk           = "2.2"
+solana-client        = "2.2"
+solana-transaction-status = "2.2"
+solana-program       = "2.2"
+spl-token            = { version = "7.0", features = ["no-entrypoint"] }
+zeroize = { version = "1.7", default-features = false }
+
+# Async runtime
+tokio                = { version = "1", features = ["full"] }
+
+# Serialization
+serde                = { version = "1", features = ["derive"] }
+serde_json           = "1"
+bincode              = "2"
+borsh                = { version = "1", features = ["derive"] }
+
+futures-util          = "0.3"
+
+# Networking / RPC
+reqwest              = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tungstenite          = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite    = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+url                  = "2"
+
+# Metrics
+prometheus           = { version = "0.13", features = ["process"] }
+
+# Logging
+tracing              = "0.1"
+tracing-subscriber   = { version = "0.3", features = ["env-filter", "json"] }
+
+# Config / env
+dotenvy              = "0.15"
+config               = "0.15"
+
+# Error handling
+thiserror            = "2"
+anyhow               = "1"
+
+# Concurrency / atomics / lock-free
+crossbeam            = "0.8"
+crossbeam-channel    = "0.5"
+parking_lot          = "0.12"
+dashmap              = "6"
+arc-swap             = "1"
+
+# Data structures
+indexmap             = "2"
+smallvec             = { version = "1", features = ["const_generics", "union"] }
+ahash                = "0.8"
+
+# Numerics / fixed-point arithmetic
+rust_decimal         = { version = "1", features = ["serde-float"] }
+uint                 = "0.9"
+
+# Base58
+bs58                 = "0.5"
+
+# Time
+chrono               = { version = "0.4", features = ["serde"] }
+
+# Testing / fuzzing
+proptest             = "1"
+arbitrary            = { version = "1", features = ["derive"] }
+
+[profile.release]
+opt-level            = 3
+lto                  = "fat"
+codegen-units        = 1
+panic                = "abort"
+
+[profile.dev]
+opt-level            = 1
