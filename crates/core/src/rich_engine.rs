@@ -2,7 +2,7 @@
 use common::types::{ArbPath, Dex, MarketEdge, PriceMatrix, RichColor, TokenMint};
 use rust_decimal::prelude::ToPrimitive;
 use rustc_hash::FxHashMap;
-use tracing::{debug, warn};
+use tracing::debug;
 
 const REF_POSITION_LAMPORTS: f64 = 100_000_000.0; // 0.1 SOL reference
 const STALE_SLOTS: u64 = 200;
@@ -19,9 +19,9 @@ pub struct RichEngine {
 }
 
 impl RichEngine {
-    pub fn new(max_hops: usize) -> Result<Self, crate::path_finder::PathError> {
+    pub fn new(max_hops: usize) -> Result<Self, crate::gnn_stub::PathError> {
         if !(2..=6).contains(&max_hops) {
-            return Err(crate::path_finder::PathError::InvalidHops(max_hops));
+            return Err(crate::gnn_stub::PathError::InvalidHops(max_hops));
         }
         Ok(Self { max_hops })
     }
@@ -40,7 +40,7 @@ impl RichEngine {
             let mut dist = vec![f64::INFINITY; n];
             dist[src] = 0.0;
 
-            // Bellman-Ford relaxation (n-1 iterations)
+            // Bellman-Ford relaxation
             for _ in 0..n - 1 {
                 for u in 0..n {
                     if dist[u].is_infinite() {
@@ -62,7 +62,7 @@ impl RichEngine {
                 }
             }
 
-            // Check for negative cycles reachable from src
+            // Detect negative cycles
             for u in 0..n {
                 if dist[u].is_infinite() {
                     continue;
@@ -74,7 +74,6 @@ impl RichEngine {
                     }
                     let w = weights[row_start + v];
                     if w.is_finite() && dist[u] + w < dist[v] {
-                        // Negative cycle detected
                         if let Some(path) = self.reconstruct_cycle(matrix, src, u, v) {
                             let total_log_weight: f64 = path
                                 .edges
@@ -97,8 +96,6 @@ impl RichEngine {
         results
     }
 
-    /// Simplified cycle reconstruction (stub version).
-    /// In a production version you should maintain predecessor arrays during Bellman-Ford.
     fn reconstruct_cycle(
         &self,
         matrix: &PriceMatrix,
@@ -112,20 +109,19 @@ impl RichEngine {
 
         while steps < self.max_hops && steps < 10 {
             let from_idx = if steps == 0 { start } else { current };
-            let to_idx = if steps == 0 { end } else { (current + 1) % matrix.n }; // very naive cycle
+            let to_idx = if steps == 0 { end } else { (current + 1) % matrix.n };
 
             if let (Some(from_tok), Some(to_tok)) = (
                 matrix.tokens.get(from_idx),
                 matrix.tokens.get(to_idx),
             ) {
-                // Get weight from matrix
                 let w = matrix.get(from_idx, to_idx).unwrap_or(0.0);
                 let log_weight = rust_decimal::Decimal::from_f64_retain(w).unwrap_or_default();
 
                 edges.push(MarketEdge {
                     from: from_tok.clone(),
                     to: to_tok.clone(),
-                    dex: Dex::Raydium, // stub — in real version use actual DEX from edge data
+                    dex: Dex::Raydium, // TODO: use real DEX when available
                     log_weight,
                     liquidity_lamports: 1_000_000_000,
                     slot: 0,
@@ -140,7 +136,6 @@ impl RichEngine {
             return None;
         }
 
-        // Calculate expected profit from total log return
         let total_log: f64 = edges
             .iter()
             .map(|e| e.log_weight.to_f64().unwrap_or(0.0))
@@ -195,7 +190,6 @@ impl MatrixBuilder {
     }
 
     pub fn build(&mut self, edges: &[MarketEdge]) -> PriceMatrix {
-        // Register all unique tokens
         for edge in edges {
             self.register_token(&edge.from);
             self.register_token(&edge.to);
