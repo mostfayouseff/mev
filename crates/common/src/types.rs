@@ -1,10 +1,7 @@
-// =============================================================================
-// COMMON TYPES — Security audited
-// =============================================================================
-
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
+use std::str::FromStr;
 
 /// Opaque newtype for Solana token mint (32-byte pubkey).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -20,18 +17,22 @@ impl TokenMint {
     pub fn zero() -> Self {
         Self([0u8; 32])
     }
+
+    #[must_use]
+    pub fn to_base58(&self) -> String {
+        bs58::encode(self.0).into_string()
+    }
 }
 
 impl fmt::Display for TokenMint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Standard Solana base58 display for mints
-        write!(f, "{}", bs58::encode(self.0).into_string())
+        write!(f, "{}", self.to_base58())
     }
 }
 
-// Add these if you need to parse from string (recommended)
-impl std::str::FromStr for TokenMint {
+impl FromStr for TokenMint {
     type Err = bs58::decode::Error;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = bs58::decode(s).into_vec()?;
         if bytes.len() != 32 {
@@ -43,7 +44,23 @@ impl std::str::FromStr for TokenMint {
     }
 }
 
-/// Supported DEXes
+impl Serialize for TokenMint {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_base58())
+    }
+}
+
+impl<'de> Deserialize<'de> for TokenMint {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse::<TokenMint>().map_err(serde::de::Error::custom)
+    }
+}
+
+// =============================================================================
+// DEX & Path Types
+// =============================================================================
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Dex {
     Raydium,
@@ -65,18 +82,16 @@ impl fmt::Display for Dex {
     }
 }
 
-/// Market edge with precise decimal weight
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketEdge {
     pub from: TokenMint,
     pub to: TokenMint,
     pub dex: Dex,
-    pub log_weight: Decimal,           // ln(out/in)
+    pub log_weight: Decimal,
     pub liquidity_lamports: u64,
     pub slot: u64,
 }
 
-/// Arbitrage path
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArbPath {
     pub edges: Vec<MarketEdge>,
@@ -92,11 +107,10 @@ pub enum RichColor {
     Black,
 }
 
-/// Hot-path price matrix (f64 for speed)
 #[derive(Debug, Clone)]
 pub struct PriceMatrix {
     pub n: usize,
-    pub data: Vec<f64>,        // row-major
+    pub data: Vec<f64>, // row-major
     pub tokens: Vec<TokenMint>,
 }
 
