@@ -5,7 +5,7 @@
 use prometheus::{
     register_counter, register_gauge, register_histogram, Counter, Gauge, Histogram, HistogramOpts, Opts,
 };
-use tracing::warn;
+
 
 pub struct ApexMetrics {
     pub paths_evaluated: Counter,
