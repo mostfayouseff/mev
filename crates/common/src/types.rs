@@ -1,25 +1,14 @@
 // =============================================================================
-// SECURITY AUDIT CHECKLIST — common/src/types.rs
-// [✓] All profit/fee calculations use Decimal (no floating-point precision bugs)
-// [✓] PriceMatrix uses f64 in hot-path data; Decimal stays in MarketEdge
-// [✓] No Clone-derived types expose secrets
-// [✓] TokenMint is opaque (newtype), prevents mixing up mint addresses
+// COMMON TYPES — Security audited
 // =============================================================================
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Opaque newtype for a token mint address (32-byte base58-encoded public key).
-/// Using a newtype prevents accidentally swapping source/dest mints.
+/// Opaque newtype for Solana token mint (32-byte pubkey).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TokenMint(pub [u8; 32]);
-
-impl fmt::Display for TokenMint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(self.0))
-    }
-}
 
 impl TokenMint {
     #[must_use]
@@ -28,13 +17,33 @@ impl TokenMint {
     }
 
     #[cfg(test)]
-    #[must_use]
     pub fn zero() -> Self {
         Self([0u8; 32])
     }
 }
 
-/// Supported DEX identifiers.
+impl fmt::Display for TokenMint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Standard Solana base58 display for mints
+        write!(f, "{}", bs58::encode(self.0).into_string())
+    }
+}
+
+// Add these if you need to parse from string (recommended)
+impl std::str::FromStr for TokenMint {
+    type Err = bs58::decode::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bytes = bs58::decode(s).into_vec()?;
+        if bytes.len() != 32 {
+            return Err(bs58::decode::Error::BufferTooSmall);
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(Self(arr))
+    }
+}
+
+/// Supported DEXes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Dex {
     Raydium,
@@ -56,23 +65,18 @@ impl fmt::Display for Dex {
     }
 }
 
-/// A directed weighted edge between two tokens on a specific DEX.
-/// `log_weight` stored as Decimal for precision in P&L accounting.
-/// The hot-path matrix converts to f64 once at build time.
+/// Market edge with precise decimal weight
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketEdge {
     pub from: TokenMint,
     pub to: TokenMint,
     pub dex: Dex,
-    /// ln(out_amount / in_amount) — negative ↔ profitable direction
-    pub log_weight: Decimal,
-    /// Absolute liquidity in lamports; used for position sizing
+    pub log_weight: Decimal,           // ln(out/in)
     pub liquidity_lamports: u64,
-    /// Slot when this edge was last refreshed
     pub slot: u64,
 }
 
-/// A full arbitrage path (sequence of edges forming a cycle).
+/// Arbitrage path
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArbPath {
     pub edges: Vec<MarketEdge>,
@@ -81,7 +85,6 @@ pub struct ArbPath {
     pub rich_color: RichColor,
 }
 
-/// RICH color-coding state for a path/cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RichColor {
     White,
@@ -89,34 +92,25 @@ pub enum RichColor {
     Black,
 }
 
-/// N×N price matrix — hot path uses f64 natively.
-/// Entry [i][j] = ln(exchange_rate) for token i → token j.
-/// f64::INFINITY = no edge between this pair.
-///
-/// Layout: row-major flat Vec<f64> for maximum cache locality.
-/// The AVX2 inner loop in rich_engine reads this directly with no conversion.
+/// Hot-path price matrix (f64 for speed)
 #[derive(Debug, Clone)]
 pub struct PriceMatrix {
     pub n: usize,
-    /// Row-major f64 weights; INFINITY = no edge
-    pub data: Vec<f64>,
+    pub data: Vec<f64>,        // row-major
     pub tokens: Vec<TokenMint>,
 }
 
 impl PriceMatrix {
-    /// Construct a matrix pre-filled with INFINITY (no edges).
     #[must_use]
     pub fn new(tokens: Vec<TokenMint>) -> Self {
         let n = tokens.len();
-        let capacity = n.saturating_mul(n);
         Self {
             n,
-            data: vec![f64::INFINITY; capacity],
+            data: vec![f64::INFINITY; n * n],
             tokens,
         }
     }
 
-    /// Safe indexed get; returns None on out-of-bounds.
     #[inline]
     #[must_use]
     pub fn get(&self, row: usize, col: usize) -> Option<f64> {
@@ -124,7 +118,6 @@ impl PriceMatrix {
         self.data.get(idx).copied()
     }
 
-    /// Safe indexed set. Returns false on out-of-bounds.
     #[inline]
     pub fn set(&mut self, row: usize, col: usize, val: f64) -> bool {
         if let Some(idx) = row.checked_mul(self.n).and_then(|r| r.checked_add(col)) {
@@ -134,22 +127,5 @@ impl PriceMatrix {
             }
         }
         false
-    }
-}
-
-/// Result of a submitted Solana transaction / Jito bundle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TxResult {
-    pub signature: Vec<u8>,
-    pub slot: u64,
-    pub profit_lamports: i64,
-    pub success: bool,
-    pub error: Option<String>,
-}
-
-// ─── hex helper ──────────────────────────────────────────────────────────────
-mod hex {
-    pub fn encode(bytes: impl AsRef<[u8]>) -> String {
-        bytes.as_ref().iter().map(|b| format!("{b:02x}")).collect()
     }
 }
