@@ -1,11 +1,8 @@
 // =============================================================================
-// APEX-MEV CONFIGURATION — Live Trading Mode
-//
-// All configuration loaded exclusively from environment variables.
-// Helius WebSocket is the PRIMARY ingress source.
+// APEX-MEV CONFIGURATION
 // =============================================================================
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 use tracing::info;
 
@@ -79,7 +76,7 @@ impl ApexConfig {
 
             min_profit_lamports: parse_env_u64("APEX_MIN_PROFIT_LAMPORTS", 0)?,
             max_hops: parse_env_usize("APEX_MAX_HOPS", 4)?,
-            max_position_lamports: parse_env_u64("APEX_MAX_POSITION_LAMPORTS", 1_000_000_000)?, // 1 SOL default
+            max_position_lamports: parse_env_u64("APEX_MAX_POSITION_LAMPORTS", 1_000_000_000)?,
             slippage_bps: parse_env_u16("APEX_SLIPPAGE_BPS", 50)?,
 
             flash_loan_enabled: parse_env_bool("APEX_FLASH_LOAN_ENABLED", true)?,
@@ -102,8 +99,6 @@ impl ApexConfig {
             min_profit_lamports = cfg.min_profit_lamports,
             max_position_sol = cfg.max_position_lamports as f64 / 1e9,
             helius_active = cfg.helius_api_key.as_ref().map_or(false, |k| !k.is_empty()),
-            alchemy_active = cfg.alchemy_api_key.as_ref().map_or(false, |k| !k.is_empty()),
-            jupiter_key = cfg.jupiter_api_key.is_some(),
             "ApexConfig loaded successfully"
         );
 
