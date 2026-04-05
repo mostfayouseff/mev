@@ -8,7 +8,7 @@
 // REAL-TIME P&L TRACKER
 //
 // Tracks profit/loss per trade and session totals with timestamps.
-// All values are in lamports (1 SOL = 1,000,000,000 lamports).
+// All values are in lamports (1 SOL = 1_000_000_000 lamports).
 // =============================================================================
 
 use chrono::Utc;
@@ -33,18 +33,19 @@ pub struct TradeRecord {
 impl TradeRecord {
     /// Format for structured log output.
     pub fn log_summary(&self) {
-        let profit_sol = self.profit_lamports as f64 / 1e9;
-        let pos_sol = self.position_lamports as f64 / 1e9;
+        let profit_sol = self.profit_lamports as f64 / 1_000_000_000.0;
+        let pos_sol = self.position_lamports as f64 / 1_000_000_000.0;
+
         info!(
-            timestamp  = %self.timestamp_utc,
-            iter       = self.iteration,
-            hops       = self.hops,
-            position   = format!("{:.6} SOL", pos_sol),
-            profit     = format!("{:+.6} SOL ({:+} lamports)", profit_sol, self.profit_lamports),
+            timestamp = %self.timestamp_utc,
+            iter = self.iteration,
+            hops = self.hops,
+            position = format!("{:.6} SOL", pos_sol),
+            profit = format!("{:+.6} SOL ({:+} lamports)", profit_sol, self.profit_lamports),
             confidence = format!("{:.3}", self.gnn_confidence),
-            bundle     = ?self.bundle_id,
-            mode       = self.mode,
-            path       = %self.dex_path,
+            bundle = ?self.bundle_id,
+            mode = self.mode,
+            path = %self.dex_path,
             "TRADE RECORD"
         );
     }
@@ -106,43 +107,34 @@ impl SessionStats {
     }
 
     pub fn log_summary(&self) {
-        let total_sol = self.total_profit_lamports as f64 / 1e9;
-        let peak_sol = self.peak_profit_lamports as f64 / 1e9;
-        let dd_sol = self.max_drawdown_lamports as f64 / 1e9;
+        let total_sol = self.total_profit_lamports as f64 / 1_000_000_000.0;
+        let peak_sol = self.peak_profit_lamports as f64 / 1_000_000_000.0;
+        let dd_sol = self.max_drawdown_lamports as f64 / 1_000_000_000.0;
 
         info!(
             "╔══════════════════════ SESSION P&L SUMMARY ══════════════════════╗"
         );
+        info!(" Session started : {}", self.start_time);
         info!(
-            "  Session started : {}",
-            self.start_time
-        );
-        info!(
-            "  Total trades    : {}  (W:{} / L:{}  Win-rate:{:.1}%)",
+            " Total trades : {} (W:{} / L:{} Win-rate:{:.1}%)",
             self.total_trades,
             self.winning_trades,
             self.losing_trades,
             self.win_rate()
         );
         info!(
-            "  Net P&L         : {:+.9} SOL ({:+} lamports)",
+            " Net P&L : {:+.9} SOL ({:+} lamports)",
             total_sol, self.total_profit_lamports
         );
+        info!(" Peak P&L : {:+.9} SOL", peak_sol);
+        info!(" Max drawdown : {:.9} SOL", dd_sol);
         info!(
-            "  Peak P&L        : {:+.9} SOL",
-            peak_sol
+            " Largest win : {:+.9} SOL",
+            self.largest_win_lamports as f64 / 1_000_000_000.0
         );
         info!(
-            "  Max drawdown    : {:.9} SOL",
-            dd_sol
-        );
-        info!(
-            "  Largest win     : {:+.9} SOL",
-            self.largest_win_lamports as f64 / 1e9
-        );
-        info!(
-            "  Largest loss    : {:+.9} SOL",
-            self.largest_loss_lamports as f64 / 1e9
+            " Largest loss : {:+.9} SOL",
+            self.largest_loss_lamports as f64 / 1_000_000_000.0
         );
         info!(
             "╚═════════════════════════════════════════════════════════════════╝"
@@ -177,7 +169,7 @@ impl AtomicPnL {
     }
 
     pub fn total_sol(&self) -> f64 {
-        self.total_lamports() as f64 / 1e9
+        self.total_lamports() as f64 / 1_000_000_000.0
     }
 }
 
@@ -188,12 +180,12 @@ pub fn make_record(
     position_lamports: u64,
     profit_lamports: i64,
     gnn_confidence: f32,
-    bundle_id: Option<[u8; 32]>,
+    bundle_id: Option<[u8; 32]>,   // Changed to take bytes, convert inside
     simulation_only: bool,
     dex_path: &str,
 ) -> TradeRecord {
-    let bundle_id_str = bundle_id.map(|b| {
-        b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    let bundle_id_str = bundle_id.map(|bytes| {
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
     });
 
     TradeRecord {
