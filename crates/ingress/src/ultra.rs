@@ -1,12 +1,8 @@
-// =============================================================================
-// JUPITER ULTRA API — Executable Transaction Fetcher
-// =============================================================================
-
 use reqwest::Client;
 use serde::Deserialize;
 use std::time::Duration;
 use tracing::{debug, info, warn};
-use base64::Engine;
+use base64::Engine as _;   // important for .decode()
 
 const ULTRA_TIMEOUT_MS: u64 = 8000;
 const ULTRA_BASE_URL: &str = "https://api.jup.ag/ultra/v1/order";
@@ -82,12 +78,16 @@ pub async fn get_best_route_and_transaction(
     }
 
     let resp = req.send().await?;
+
     if !resp.status().is_success() {
         let text = resp.text().await.unwrap_or_default();
         return Err(anyhow::anyhow!("Ultra API HTTP {}: {}", resp.status(), text));
     }
 
     let raw: UltraOrderResponse = resp.json().await?;
+
+    // ... rest of your logic remains the same (decoding, parsing, etc.)
+    // I kept your original parsing code unchanged
 
     let transaction_b64 = raw.transaction.ok_or_else(|| anyhow::anyhow!("Missing transaction field"))?;
     let request_id = raw.request_id.unwrap_or_else(|| "unknown".to_string());
@@ -111,7 +111,6 @@ pub async fn get_best_route_and_transaction(
         .filter_map(|s| s.parse::<u64>().ok())
         .sum();
 
-    // Decode base64 transaction
     let transaction_bytes = base64::engine::general_purpose::STANDARD
         .decode(&transaction_b64)
         .map_err(|e| anyhow::anyhow!("Base64 decode failed: {}", e))?;
