@@ -1,10 +1,5 @@
-// crates/core/src/lib.rs
-pub mod price_matrix;
 pub mod rich_engine;
+pub mod gnn_stub;   // (the stub you already have)
 
-// Temporary stub for GNN until real implementation is added
-pub mod gnn_stub;
-
+pub use rich_engine::{MatrixBuilder, RichEngine, RichResult};
 pub use gnn_stub::GnnOracle;
-pub use price_matrix::PriceMatrix;
-pub use rich_engine::RichEngine;
