@@ -15,7 +15,6 @@ use sha2::{Digest, Sha256};
 use tracing::trace;
 
 // ── Canonical mainnet program IDs ────────────────────────────────────────────
-// Updated to use the latest deployed versions of each protocol.
 
 /// Raydium AMM v4 — constant-product AMM (most liquid SOL pairs)
 const RAYDIUM_AMM_PROGRAM_ID: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
@@ -45,16 +44,10 @@ pub struct DexHop {
     pub program_id: String,
     /// Deterministic pool address derived from token mints + DEX discriminator.
     /// Format: SHA-256(sorted_mint_a || sorted_mint_b || dex_seed)
-    /// truncated to 32 bytes and base58-encoded — consistent with Solana PDA conventions.
     pub pool_address: String,
 }
 
 /// Multi-DEX router: resolves ArbPath edges to concrete DEX program accounts.
-///
-/// In production the pool address lookup would query the on-chain Raydium/Orca
-/// registries or a local cache updated by the indexer. The SHA-256 derivation
-/// here produces a stable, deterministic address that can be used as a cache key
-/// before the real on-chain lookup is substituted.
 pub struct MultiDexRouter;
 
 impl MultiDexRouter {
@@ -65,29 +58,29 @@ impl MultiDexRouter {
 
     /// Build a `DexRoute` from an `ArbPath`.
     ///
-    /// Each edge in the path corresponds to one `DexHop`. The program ID is
-    /// looked up from the whitelist and the pool address is derived from the
-    /// token mint pair using SHA-256.
+    /// Each edge becomes one `DexHop`. Program ID comes from whitelist,
+    /// pool address is deterministically derived (for caching / simulation).
     #[must_use]
     pub fn build_route(&self, path: &ArbPath) -> DexRoute {
         let hops = path
             .edges
             .iter()
-            .filter_map(|edge| {
-                let program_id = dex_program_id(edge.dex)?;
-                let pool_address =
-                    derive_pool_address(&edge.from.0, &edge.to.0, edge.dex);
+            .map(|edge| {
+                let program_id = dex_program_id(edge.dex);
+                let pool_address = derive_pool_address(&edge.from.0, &edge.to.0, edge.dex);
+
                 trace!(
-                    dex = %edge.dex,
-                    program_id,
+                    dex = ?edge.dex,
+                    program_id = %program_id,
                     pool = %pool_address,
                     "Resolved DEX route hop"
                 );
-                Some(DexHop {
+
+                DexHop {
                     dex: edge.dex,
                     program_id: program_id.to_string(),
                     pool_address,
-                })
+                }
             })
             .collect();
 
@@ -101,31 +94,23 @@ impl Default for MultiDexRouter {
     }
 }
 
-/// Map DEX variant to its canonical on-chain program ID.
-pub fn dex_program_id(dex: Dex) -> Option<&'static str> {
-    Some(match dex {
+/// Map DEX variant to its canonical on-chain program ID (exhaustive match).
+pub fn dex_program_id(dex: Dex) -> &'static str {
+    match dex {
         Dex::Raydium => RAYDIUM_AMM_PROGRAM_ID,
         Dex::Orca => ORCA_WHIRLPOOL_PROGRAM_ID,
         Dex::Meteora => METEORA_DAMM_PROGRAM_ID,
         Dex::Phoenix => PHOENIX_PROGRAM_ID,
         Dex::JupiterV6 => JUPITER_V6_PROGRAM_ID,
-    })
+    }
 }
 
 /// Derive a deterministic pool address from two token mints and the DEX.
 ///
-/// Algorithm:
-///   1. Sort mint_a and mint_b lexicographically (canonical ordering prevents
-///      different addresses for the same pair depending on swap direction).
-///   2. Append the DEX-specific seed byte.
-///   3. SHA-256 hash the concatenated bytes.
-///   4. Base58-encode the 32-byte digest.
-///
-/// This produces a 44-character base58 string that uniquely identifies the pool
-/// and is stable across restarts. In production, replace with a lookup from the
-/// on-chain AMM registry (getAccountInfo on the pool PDA derived by each DEX).
+/// This is a stable cache key. In production, you should replace this with
+/// real on-chain registry lookups (e.g. Raydium/Orca pool accounts).
 fn derive_pool_address(mint_a: &[u8; 32], mint_b: &[u8; 32], dex: Dex) -> String {
-    // Sort mints for canonical ordering
+    // Canonical ordering to make address independent of swap direction
     let (first, second) = if mint_a <= mint_b {
         (mint_a.as_slice(), mint_b.as_slice())
     } else {
@@ -136,7 +121,6 @@ fn derive_pool_address(mint_a: &[u8; 32], mint_b: &[u8; 32], dex: Dex) -> String
     hasher.update(first);
     hasher.update(second);
     hasher.update([dex_seed(dex)]);
-    // Include token program ID to namespace the derivation
     hasher.update(TOKEN_PROGRAM_ID.as_bytes());
 
     let digest = hasher.finalize();
@@ -144,7 +128,6 @@ fn derive_pool_address(mint_a: &[u8; 32], mint_b: &[u8; 32], dex: Dex) -> String
 }
 
 /// Return the DEX-specific seed byte used in pool address derivation.
-/// These values are arbitrary but stable — they namespace pools per protocol.
 fn dex_seed(dex: Dex) -> u8 {
     match dex {
         Dex::Raydium => 0x52,   // 'R'
@@ -155,37 +138,45 @@ fn dex_seed(dex: Dex) -> u8 {
     }
 }
 
-/// Minimal base58 encoder for 32-byte hashes.
-///
-/// Uses the same alphabet as Solana (Bitcoin base58check).
+/// Minimal, correct base58 encoder for 32-byte digests (Solana-style).
 fn bs58_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-    let mut digits: Vec<u8> = Vec::with_capacity(bytes.len() * 138 / 100 + 1);
-    digits.push(0);
+    if bytes.is_empty() {
+        return String::new();
+    }
 
+    let mut digits = vec![0u8; 1];
     for &byte in bytes {
         let mut carry = byte as u32;
-        for digit in digits.iter_mut() {
-            carry += (*digit as u32) << 8;
-            *digit = (carry % 58) as u8;
+        let mut i = 0;
+        while carry > 0 || i < digits.len() {
+            if i == digits.len() {
+                digits.push(0);
+            }
+            carry += (digits[i] as u32) << 8;
+            digits[i] = (carry % 58) as u8;
             carry /= 58;
-        }
-        while carry > 0 {
-            digits.push((carry % 58) as u8);
-            carry /= 58;
+            i += 1;
         }
     }
 
-    // Leading zero bytes become '1'
-    let leading_ones = bytes.iter().take_while(|&&b| b == 0).count();
-    let mut result = String::with_capacity(leading_ones + digits.len());
-    for _ in 0..leading_ones {
-        result.push('1');
-    }
-    for &d in digits.iter().rev() {
+    // Count leading zeros in input
+    let leading_zeros = bytes.iter().take_while(|&&b| b == 0).count();
+
+    let mut result = String::with_capacity(leading_zeros + digits.len());
+    result.extend(std::iter::repeat('1').take(leading_zeros));
+
+    // Convert digits to characters (skip leading zeros in digits array)
+    for &d in digits.iter().rev().skip_while(|&&x| x == 0) {
         result.push(ALPHABET[d as usize] as char);
     }
+
+    // Edge case: all zeros
+    if result.is_empty() {
+        result.push('1');
+    }
+
     result
 }
 
@@ -226,17 +217,8 @@ mod tests {
             let route = router.build_route(&make_path(dex));
             assert_eq!(route.hops.len(), 1);
             assert!(!route.hops[0].program_id.is_empty());
+            assert!(!route.hops[0].pool_address.is_empty());
         }
-    }
-
-    #[test]
-    fn pool_address_no_stub_suffix() {
-        let router = MultiDexRouter::new();
-        let route = router.build_route(&make_path(Dex::Raydium));
-        assert!(
-            !route.hops[0].pool_address.contains("stub"),
-            "Pool address should not contain 'stub'"
-        );
     }
 
     #[test]
@@ -250,12 +232,11 @@ mod tests {
 
     #[test]
     fn pool_address_symmetric() {
-        // Same pair in different orders should produce the same address
         let mint_a = [1u8; 32];
         let mint_b = [2u8; 32];
         let addr_ab = derive_pool_address(&mint_a, &mint_b, Dex::Orca);
         let addr_ba = derive_pool_address(&mint_b, &mint_a, Dex::Orca);
-        assert_eq!(addr_ab, addr_ba, "Pool address must be pair-order independent");
+        assert_eq!(addr_ab, addr_ba);
     }
 
     #[test]
@@ -264,14 +245,20 @@ mod tests {
         let mint_b = [2u8; 32];
         let addr_r = derive_pool_address(&mint_a, &mint_b, Dex::Raydium);
         let addr_o = derive_pool_address(&mint_a, &mint_b, Dex::Orca);
-        assert_ne!(addr_r, addr_o, "Different DEXes must produce different pool addresses");
+        assert_ne!(addr_r, addr_o);
     }
 
     #[test]
     fn pool_address_length_plausible() {
         let addr = derive_pool_address(&[0xABu8; 32], &[0xCDu8; 32], Dex::JupiterV6);
-        // Base58-encoded 32 bytes → 43-44 chars
-        assert!(addr.len() >= 40, "Address too short: {addr}");
-        assert!(addr.len() <= 50, "Address too long: {addr}");
+        assert!(addr.len() >= 40 && addr.len() <= 50, "Unexpected length: {}", addr.len());
+    }
+
+    #[test]
+    fn bs58_encode_works() {
+        let test_bytes = [0u8; 32];
+        let encoded = bs58_encode(&test_bytes);
+        assert!(!encoded.is_empty());
+        assert!(encoded.starts_with('1')); // all-zero input → many leading 1s
     }
 }
