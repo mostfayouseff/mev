@@ -117,7 +117,11 @@ impl JitoBundleHandler {
         }
     }
 
-    pub fn new_live(engine_url: String, rpc_url: &str, keypair: ApexKeypair) -> anyhow::Result<Self> {
+    pub fn new_live(
+        engine_url: String,
+        rpc_url: &str,
+        keypair: ApexKeypair,
+    ) -> anyhow::Result<Self> {
         let http_client = Client::builder()
             .timeout(Duration::from_millis(HTTP_TIMEOUT_MS))
             .build()
@@ -141,16 +145,19 @@ impl JitoBundleHandler {
         swap_payloads: Vec<Vec<u8>>,
         expected_profit_lamports: u64,
     ) -> Result<JitoBundle, JitoError> {
-        let tip = self.tip_calculator
+        let tip = self
+            .tip_calculator
             .compute_tip(expected_profit_lamports)
             .map_err(|e| JitoError::TipError(e.to_string()))?;
 
         let tip_account = select_random_tip_account();
 
         if self.simulation_only {
-            self.submit_simulation(swap_payloads, tip, expected_profit_lamports, tip_account).await
+            self.submit_simulation(swap_payloads, tip, expected_profit_lamports, tip_account)
+                .await
         } else {
-            self.submit_live(swap_payloads, tip, expected_profit_lamports, tip_account).await
+            self.submit_live(swap_payloads, tip, expected_profit_lamports, tip_account)
+                .await
         }
     }
 
@@ -164,13 +171,16 @@ impl JitoBundleHandler {
         let delay_ms = (rand::random::<u8>() as u64) % 50;
         sleep(Duration::from_millis(delay_ms)).await;
 
-        let mock_txs: Vec<String> = payloads.iter().map(|p| bs58::encode(p).into_string()).collect();
+        let mock_txs: Vec<String> = payloads
+            .iter()
+            .map(|p| bs58::encode(p).into_string())
+            .collect();
 
         let bundle = JitoBundle::new(mock_txs, tip_lamports, tip_account.clone())
             .map_err(|e| JitoError::Serialization(e.to_string()))?;
 
         info!(
-            bundle_id = %hex::encode(bundle.id),
+            bundle_id = %hex_encode(bundle.id),
             tip = tip_lamports,
             profit = profit_lamports,
             txs = payloads.len(),
@@ -190,7 +200,9 @@ impl JitoBundleHandler {
         let rpc = self.rpc_client.as_ref().ok_or_else(|| JitoError::Rpc("No RPC client".into()))?;
         let keypair = self.keypair.as_ref().ok_or_else(|| JitoError::Signing("No keypair".into()))?;
 
-        let blockhash = rpc.get_latest_blockhash().await
+        let blockhash = rpc
+            .get_latest_blockhash()
+            .await
             .map_err(|e| JitoError::Rpc(e.to_string()))?;
 
         // Enforce max bundle size
@@ -216,7 +228,7 @@ impl JitoBundleHandler {
             .map_err(|e| JitoError::Serialization(e.to_string()))?;
 
         info!(
-            bundle_id = %hex::encode(bundle.id),
+            bundle_id = %hex_encode(bundle.id),
             tip = tip_lamports,
             profit_est = profit_lamports,
             tx_count = signed_txs.len(),
@@ -237,7 +249,8 @@ impl JitoBundleHandler {
 
 fn select_random_tip_account() -> String {
     let mut rng = rand::thread_rng();
-    JITO_TIP_ACCOUNTS.choose(&mut rng)
+    JITO_TIP_ACCOUNTS
+        .choose(&mut rng)
         .copied()
         .unwrap_or(JITO_TIP_ACCOUNTS[0])
         .to_string()
@@ -252,6 +265,27 @@ fn sign_transaction(tx_bytes: &mut Vec<u8>, keypair: &ApexKeypair) -> anyhow::Re
     Ok(())
 }
 
-fn hex::encode(bytes: [u8; 32]) -> String {
+/// Simple hex encoder for bundle ID (32 bytes → 64 hex chars)
+fn hex_encode(bytes: [u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// TODO: Implement these stubs (they are called but not defined in the snippet)
+fn build_tip_transaction(
+    _keypair: &ApexKeypair,
+    _blockhash: &str,
+    _tip_lamports: u64,
+    _tip_account: &str,
+) -> Vec<u8> {
+    // Return a properly built tip transaction (usually a transfer to the tip account)
+    vec![]
+}
+
+async fn post_bundle(
+    _client: &Client,
+    _engine_url: &str,
+    _signed_txs: &[String],
+) -> anyhow::Result<()> {
+    // Implement actual Jito bundle POST here
+    Ok(())
 }
