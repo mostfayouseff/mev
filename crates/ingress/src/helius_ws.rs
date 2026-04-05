@@ -1,15 +1,14 @@
 use bytes::Bytes;
-use common::types::{Dex, MarketEdge, TokenMint};
 use futures_util::{SinkExt, StreamExt};
-use reqwest::Client;
-use rust_decimal::Decimal; // removed if truly unused
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
-use tokio_tungstenite::tungstenite::Message;   // ← Correct import
-use tracing::{debug, error, info, warn};
+use tokio_tungstenite::{
+    connect_async_tls_with_config,   // ← Added this
+    tungstenite::Message,
+};
+use tracing::{error, info, warn};
 
 pub const DEX_PROGRAMS: &[&str] = &[
     "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
@@ -151,10 +150,6 @@ impl HeliusTransactionStream {
     }
 }
 
-// Keep your Alchemy stub or implement similarly if needed
-pub struct AlchemyTransactionStream; // placeholder
-
-// Utility
 fn extract_slot(params: &Option<serde_json::Value>) -> u64 {
     params
         .as_ref()
