@@ -20,3 +20,4 @@ rand = { workspace = true }
 blake3 = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
+bs58 = { workspace = true }
