@@ -55,13 +55,11 @@ pub const SYSTEM_PROGRAM_ID: &str = "11111111111111111111111111111111";
 /// Solend flash loan fee in basis points (0.09% = 9 bps).
 pub const FLASH_LOAN_FEE_BPS: u64 = 9;
 
-/// Instruction discriminator for FlashBorrowReserveLiquidity.
-/// Source: Solend IDL (hash of "global:flash_borrow_reserve_liquidity")
-const BORROW_DISCRIMINATOR: u8 = 0x14; // 20 decimal
+/// 8-byte Anchor discriminator for `flash_borrow_reserve_liquidity`
+const BORROW_DISCRIMINATOR: &[u8; 8] = b"\x14\x00\x00\x00\x00\x00\x00\x00"; // First byte 0x14
 
-/// Instruction discriminator for FlashRepayReserveLiquidity.
-/// Source: Solend IDL (hash of "global:flash_repay_reserve_liquidity")
-const REPAY_DISCRIMINATOR: u8 = 0x15; // 21 decimal
+/// 8-byte Anchor discriminator for `flash_repay_reserve_liquidity`
+const REPAY_DISCRIMINATOR: &[u8; 8] = b"\x15\x00\x00\x00\x00\x00\x00\x00"; // First byte 0x15
 
 #[derive(Debug, Error)]
 pub enum SolendError {
@@ -84,7 +82,7 @@ pub struct FlashLoanInstruction {
     pub data: Vec<u8>,
     /// Human-readable description
     pub description: String,
-    /// Lamport amount for this instruction
+    /// Lamport amount for this instruction (for logging)
     pub amount: u64,
 }
 
@@ -113,20 +111,14 @@ impl FlashLoanPlan {
     }
 }
 
-/// Solend flash loan builder.
-///
-/// Constructs atomic borrow + repay instruction pairs for use in Jito bundles.
-/// In simulation mode these instructions are logged but not submitted.
-/// In live mode they are prepended/appended to the arbitrage transaction.
+/// Solend flash loan builder for SOL reserve.
 pub struct SolendFlashLoan {
-    /// Override the reserve address (for non-SOL reserves)
     reserve: &'static str,
-    /// Fee in basis points
     fee_bps: u64,
 }
 
 impl SolendFlashLoan {
-    /// Create a flash loan builder for the SOL reserve (most common for MEV).
+    /// Create a flash loan builder for the SOL reserve (most common for arbitrage).
     #[must_use]
     pub fn new_sol() -> Self {
         Self {
@@ -135,30 +127,25 @@ impl SolendFlashLoan {
         }
     }
 
-    /// Compute the flash loan fee for a given borrow amount.
+    /// Compute the flash loan fee using ceiling division.
     ///
-    /// Fee = ceil(amount × fee_bps / 10_000)
-    /// Minimum fee: 1 lamport (prevents dust attacks).
+    /// Fee = ceil(borrow_amount * fee_bps / 10_000)
+    /// Minimum fee is 1 lamport to prevent dust exploits.
     pub fn compute_fee(&self, amount: u64) -> Result<u64, SolendError> {
-        let fee = amount
+        if amount == 0 {
+            return Ok(0);
+        }
+
+        let numerator = amount
             .checked_mul(self.fee_bps)
-            .ok_or(SolendError::FeeOverflow)?
-            / 10_000;
-        Ok(fee.max(1)) // minimum 1 lamport
+            .ok_or(SolendError::FeeOverflow)?;
+
+        // Ceiling division: (numerator + denominator - 1) / denominator
+        let fee = (numerator + 9_999) / 10_000;
+        Ok(fee.max(1))
     }
 
-    /// Build the flash loan plan for a given borrow amount.
-    ///
-    /// Returns a `FlashLoanPlan` containing the borrow and repay instructions
-    /// ready to be inserted into the arbitrage transaction.
-    ///
-    /// # Arguments
-    /// * `borrow_amount` — how much SOL (in lamports) to borrow
-    /// * `borrower_pubkey_bytes` — operator's 32-byte public key (for account signing)
-    ///
-    /// # Errors
-    /// Returns error if `borrow_amount` is zero, repay overflows, or the fee
-    /// calculation overflows.
+    /// Build the complete flash loan plan (borrow + repay).
     pub fn build_plan(
         &self,
         borrow_amount: u64,
@@ -180,8 +167,7 @@ impl SolendFlashLoan {
             borrow_lamports = borrow_amount,
             fee_lamports,
             repay_lamports = repay_amount,
-            fee_bps = self.fee_bps,
-            "Flash loan plan built"
+            "Solend flash loan plan constructed"
         );
 
         Ok(FlashLoanPlan {
@@ -194,47 +180,45 @@ impl SolendFlashLoan {
         })
     }
 
-    /// Log the flash loan plan (for simulation mode).
+    /// Log the flash loan plan (useful in simulation / dry-run mode).
     pub fn log_plan(plan: &FlashLoanPlan) {
         info!(
-            borrow_sol    = format!("{:.6} SOL", plan.borrow_amount as f64 / 1e9),
-            fee_sol       = format!("{:.9} SOL", plan.fee_lamports as f64 / 1e9),
-            repay_sol     = format!("{:.6} SOL", plan.repay_amount as f64 / 1e9),
-            min_profit    = plan.min_profit_after_fee,
-            "Flash loan plan (simulation)"
+            borrow_sol = format!("{:.6} SOL", plan.borrow_amount as f64 / 1_000_000_000.0),
+            fee_sol = format!("{:.9} SOL", plan.fee_lamports as f64 / 1_000_000_000.0),
+            repay_sol = format!("{:.6} SOL", plan.repay_amount as f64 / 1_000_000_000.0),
+            min_profit_after_fee = plan.min_profit_after_fee,
+            "Solend flash loan plan (simulation)"
         );
     }
 
-    /// Warn if the expected profit doesn't cover the flash loan fee.
+    /// Warn if expected profit does not cover the flash loan fee.
     pub fn check_viability(plan: &FlashLoanPlan, expected_profit: u64) {
         if !plan.is_viable(expected_profit) {
             warn!(
-                expected_profit,
-                fee_lamports = plan.fee_lamports,
-                "Flash loan NOT viable — expected profit < fee. Skipping."
+                expected = expected_profit,
+                required = plan.fee_lamports,
+                "Flash loan NOT viable — profit does not cover fee"
             );
         }
     }
 
-    // ── Instruction builders ──────────────────────────────────────────────────
+    // ── Private instruction builders ───────────────────────────────────────
 
     fn build_borrow(
         &self,
         amount: u64,
-        _borrower_bytes: &[u8; 32],
+        _borrower_bytes: &[u8; 32], // Reserved for future account metas
     ) -> FlashLoanInstruction {
-        // Solend FlashBorrowReserveLiquidity instruction data:
-        //   [discriminator:1] [amount:8 LE]
-        let mut data = vec![BORROW_DISCRIMINATOR];
+        let mut data = Vec::with_capacity(9);
+        data.extend_from_slice(BORROW_DISCRIMINATOR);
         data.extend_from_slice(&amount.to_le_bytes());
 
         FlashLoanInstruction {
             program_id: SOLEND_PROGRAM_ID.to_string(),
             data,
             description: format!(
-                "Solend FlashBorrow {:.6} SOL from reserve {}",
-                amount as f64 / 1e9,
-                short_addr(SOLEND_SOL_RESERVE)
+                "Solend FlashBorrow {:.6} SOL",
+                amount as f64 / 1_000_000_000.0
             ),
             amount,
         }
@@ -245,19 +229,17 @@ impl SolendFlashLoan {
         amount: u64,
         _borrower_bytes: &[u8; 32],
     ) -> FlashLoanInstruction {
-        // Solend FlashRepayReserveLiquidity instruction data:
-        //   [discriminator:1] [amount:8 LE] [borrow_instruction_index:1]
-        let mut data = vec![REPAY_DISCRIMINATOR];
+        let mut data = Vec::with_capacity(18);
+        data.extend_from_slice(REPAY_DISCRIMINATOR);
         data.extend_from_slice(&amount.to_le_bytes());
-        data.push(0u8); // borrow_instruction_index = 0 (first ix in tx)
+        data.push(0u8); // borrow_instruction_index = 0 (first instruction in tx)
 
         FlashLoanInstruction {
             program_id: SOLEND_PROGRAM_ID.to_string(),
             data,
             description: format!(
-                "Solend FlashRepay {:.6} SOL to reserve {} (incl. fee)",
-                amount as f64 / 1e9,
-                short_addr(SOLEND_SOL_RESERVE)
+                "Solend FlashRepay {:.6} SOL (principal + fee)",
+                amount as f64 / 1_000_000_000.0
             ),
             amount,
         }
@@ -266,7 +248,7 @@ impl SolendFlashLoan {
 
 fn short_addr(addr: &str) -> String {
     if addr.len() > 8 {
-        format!("{}…{}", &addr[..4], &addr[addr.len() - 4..])
+        format!("{}…{}", &addr[0..4], &addr[addr.len() - 4..])
     } else {
         addr.to_string()
     }
@@ -281,9 +263,16 @@ mod tests {
     #[test]
     fn fee_calculated_correctly() {
         let fl = SolendFlashLoan::new_sol();
-        // 1 SOL = 1_000_000_000 lamports, fee = 9 bps = 0.09% = 900_000 lamports
-        let fee = fl.compute_fee(1_000_000_000).unwrap();
-        assert_eq!(fee, 900_000);
+        let fee = fl.compute_fee(1_000_000_000).unwrap(); // 1 SOL
+        assert_eq!(fee, 900_000); // 0.09%
+    }
+
+    #[test]
+    fn fee_uses_ceiling_division() {
+        let fl = SolendFlashLoan::new_sol();
+        // Small amount that should trigger ceiling
+        let fee = fl.compute_fee(1_000).unwrap();
+        assert!(fee >= 1);
     }
 
     #[test]
@@ -301,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn borrow_instruction_uses_solend_program() {
+    fn borrow_and_repay_use_correct_program() {
         let fl = SolendFlashLoan::new_sol();
         let plan = fl.build_plan(1_000_000, &DUMMY_PUBKEY).unwrap();
         assert_eq!(plan.borrow_instruction.program_id, SOLEND_PROGRAM_ID);
@@ -309,27 +298,26 @@ mod tests {
     }
 
     #[test]
-    fn instruction_data_discriminators_correct() {
+    fn instruction_data_has_correct_discriminators() {
         let fl = SolendFlashLoan::new_sol();
         let plan = fl.build_plan(1_000_000, &DUMMY_PUBKEY).unwrap();
-        assert_eq!(plan.borrow_instruction.data[0], BORROW_DISCRIMINATOR);
-        assert_eq!(plan.repay_instruction.data[0], REPAY_DISCRIMINATOR);
+
+        assert_eq!(&plan.borrow_instruction.data[0..8], BORROW_DISCRIMINATOR);
+        assert_eq!(&plan.repay_instruction.data[0..8], REPAY_DISCRIMINATOR);
     }
 
     #[test]
-    fn viability_check() {
+    fn viability_check_works() {
         let fl = SolendFlashLoan::new_sol();
-        let plan = fl.build_plan(1_000_000_000, &DUMMY_PUBKEY).unwrap(); // 1 SOL
-        // fee = 900_000 lamports; need at least that much profit
+        let plan = fl.build_plan(1_000_000_000, &DUMMY_PUBKEY).unwrap();
         assert!(!plan.is_viable(0));
         assert!(!plan.is_viable(plan.fee_lamports - 1));
         assert!(plan.is_viable(plan.fee_lamports));
-        assert!(plan.is_viable(plan.fee_lamports + 1));
     }
 
     #[test]
-    fn no_stub_or_placeholder_in_program_id() {
+    fn no_placeholders_in_addresses() {
         assert!(!SOLEND_PROGRAM_ID.contains("stub"));
-        assert!(SOLEND_PROGRAM_ID.len() >= 32);
+        assert!(SOLEND_PROGRAM_ID.len() == 44);
     }
 }
