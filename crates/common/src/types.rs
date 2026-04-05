@@ -3,8 +3,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::str::FromStr;
 
+// =============================================================================
+// TOKEN MINT
+// =============================================================================
+
 /// Opaque newtype for Solana token mint (32-byte pubkey).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TokenMint(pub [u8; 32]);
 
 impl TokenMint {
@@ -30,6 +34,20 @@ impl fmt::Display for TokenMint {
     }
 }
 
+// Custom Serialize / Deserialize (manual impl to avoid conflict with derive)
+impl Serialize for TokenMint {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_base58())
+    }
+}
+
+impl<'de> Deserialize<'de> for TokenMint {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse::<TokenMint>().map_err(serde::de::Error::custom)
+    }
+}
+
 impl FromStr for TokenMint {
     type Err = bs58::decode::Error;
 
@@ -44,21 +62,8 @@ impl FromStr for TokenMint {
     }
 }
 
-impl Serialize for TokenMint {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_base58())
-    }
-}
-
-impl<'de> Deserialize<'de> for TokenMint {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        s.parse::<TokenMint>().map_err(serde::de::Error::custom)
-    }
-}
-
 // =============================================================================
-// DEX & Path Types
+// DEX & PATH TYPES
 // =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
