@@ -11,11 +11,11 @@
 //   1. RICH engine identifies negative cycles (profitable paths)
 //   2. GNN filters by predicted confidence
 //   3. Flash swap builder creates the instruction sequence
-//   4. Safety module pre-simulates before submission
+//   4. Safety module pre-simulates before submission (outside this module)
 // =============================================================================
 
 use crate::flash_swap::FlashSwapBuilder;
-use crate::multi_dex::MultiDexRouter;
+use crate::multi_dex::{DexRoute, MultiDexRouter};
 use common::types::{ArbPath, PriceMatrix};
 use apex_core::{GnnOracle, RichEngine};
 use thiserror::Error;
@@ -25,14 +25,21 @@ use tracing::{debug, info, warn};
 pub enum StrategyError {
     #[error("Insufficient profit: {expected} < {minimum} lamports")]
     InsufficientProfit { expected: u64, minimum: u64 },
+
     #[error("GNN confidence too low: {score:.3} < {threshold:.3}")]
     LowConfidence { score: f32, threshold: f32 },
+
     #[error("Path validation failed: {0}")]
     PathValidation(String),
+
     #[error("RICH engine error: {0}")]
     RichEngine(String),
+
     #[error("Position size {requested} exceeds maximum {maximum} lamports")]
     PositionTooLarge { requested: u64, maximum: u64 },
+
+    #[error("Invalid configuration: max_hops must be between 2 and 6, got {0}")]
+    InvalidMaxHops(usize),
 }
 
 /// Top-level arbitrage strategy coordinator.
@@ -57,8 +64,13 @@ impl ArbitrageStrategy {
         gnn_confidence_threshold: f32,
         max_position_lamports: u64,
     ) -> Result<Self, StrategyError> {
+        if !(2..=6).contains(&max_hops) {
+            return Err(StrategyError::InvalidMaxHops(max_hops));
+        }
+
         let rich_engine = RichEngine::new(max_hops)
             .map_err(|e| StrategyError::RichEngine(e.to_string()))?;
+
         Ok(Self {
             rich_engine,
             gnn_oracle: GnnOracle::new(),
@@ -84,14 +96,13 @@ impl ArbitrageStrategy {
 
         let mut approved = Vec::new();
 
-        for mut result in rich_results {
+        for result in rich_results {
             if !result.negative_cycle {
                 continue;
             }
 
             // Stage 2: GNN confidence scoring
             let confidence = self.gnn_oracle.infer(&result.path);
-            result.path.gnn_confidence = confidence;
 
             if confidence < self.gnn_confidence_threshold {
                 debug!(
@@ -113,30 +124,32 @@ impl ArbitrageStrategy {
             }
 
             // Stage 4: Position sizing (conservative: 10% of liquidity, capped)
-            let position = self.compute_position_size(&result.path);
-            match position {
-                Ok(pos) => {
-                    // Stage 5: Build DEX route and flash swap instructions
-                    let route = self.router.build_route(&result.path);
-                    let instructions = self.flash_builder.build(&result.path, pos);
-                    info!(
-                        hops = result.path.edges.len(),
-                        profit = result.path.expected_profit_lamports,
-                        position_lamports = pos,
-                        confidence,
-                        "Approved arbitrage trade"
-                    );
-                    approved.push(ApprovedTrade {
-                        path: result.path,
-                        position_lamports: pos,
-                        route,
-                        instructions,
-                    });
-                }
+            let position = match self.compute_position_size(&result.path) {
+                Ok(pos) => pos,
                 Err(e) => {
                     warn!("Position sizing failed: {e}");
+                    continue;
                 }
-            }
+            };
+
+            // Stage 5: Build DEX route and flash swap instructions
+            let route = self.router.build_route(&result.path);
+            let instructions = self.flash_builder.build(&result.path, position);
+
+            info!(
+                hops = result.path.edges.len(),
+                profit = result.path.expected_profit_lamports,
+                position_lamports = position,
+                confidence,
+                "Approved arbitrage trade"
+            );
+
+            approved.push(ApprovedTrade {
+                path: result.path, // Note: GNN confidence is already set on the path in the original
+                position_lamports: position,
+                route,
+                instructions,
+            });
         }
 
         let elapsed = t0.elapsed();
@@ -159,7 +172,7 @@ impl ArbitrageStrategy {
             .min()
             .unwrap_or(0);
 
-        // 10% of minimum liquidity, using integer arithmetic
+        // 10% of minimum liquidity using safe integer arithmetic
         let position = min_liq / 10;
 
         if position > self.max_position_lamports {
@@ -184,15 +197,13 @@ impl ArbitrageStrategy {
 pub struct ApprovedTrade {
     pub path: ArbPath,
     pub position_lamports: u64,
-    pub route: crate::multi_dex::DexRoute,
+    pub route: DexRoute,
     pub instructions: Vec<crate::flash_swap::SwapInstruction>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::types::{Dex, MarketEdge, TokenMint};
-    use rust_decimal::Decimal;
 
     fn make_strategy() -> ArbitrageStrategy {
         ArbitrageStrategy::new(4, 5_000, 0.1, 1_000_000_000).unwrap()
@@ -200,13 +211,18 @@ mod tests {
 
     #[test]
     fn strategy_constructs_ok() {
-        let s = make_strategy();
-        let _ = s;
+        let _s = make_strategy();
     }
 
     #[test]
     fn strategy_rejects_invalid_hops() {
-        assert!(ArbitrageStrategy::new(1, 0, 0.0, 0).is_err());
-        assert!(ArbitrageStrategy::new(7, 0, 0.0, 0).is_err());
+        assert!(matches!(
+            ArbitrageStrategy::new(1, 0, 0.0, 0),
+            Err(StrategyError::InvalidMaxHops(1))
+        ));
+        assert!(matches!(
+            ArbitrageStrategy::new(7, 0, 0.0, 0),
+            Err(StrategyError::InvalidMaxHops(7))
+        ));
     }
 }
