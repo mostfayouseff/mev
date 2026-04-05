@@ -21,7 +21,7 @@
 //     than the deployed capital. The profit guard enforces min_profit on top.
 // =============================================================================
 
-use common::types::{ArbPath, Dex};
+use common::types::{ArbPath, Dex, MarketEdge};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
@@ -41,7 +41,7 @@ pub const METEORA_DAMM_PROGRAM: &str = "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn
 pub const PHOENIX_PROGRAM: &str = "PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY";
 /// Jupiter V6 aggregator program ID
 pub const JUPITER_V6_PROGRAM: &str = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
-/// Solend flash loan program ID (mainnet)
+/// Solend flash loan program ID (mainnet) — kept for future flash-loan integration
 pub const SOLEND_PROGRAM: &str = "So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo";
 
 /// A single swap instruction to be included in a transaction.
@@ -59,7 +59,7 @@ pub struct SwapInstruction {
 
 /// Builds the ordered sequence of swap instructions for an arbitrage path.
 pub struct FlashSwapBuilder {
-    /// Slippage tolerance in basis points (kept for final-hop guard calculation)
+    /// Slippage tolerance in basis points (kept for future per-hop calculations)
     slippage_bps: u64,
 }
 
@@ -69,11 +69,11 @@ impl FlashSwapBuilder {
         Self { slippage_bps: 50 }
     }
 
-    /// Create builder with custom slippage tolerance.
+    /// Create builder with custom slippage tolerance (capped at 5%).
     #[must_use]
     pub fn with_slippage_bps(slippage_bps: u64) -> Self {
         Self {
-            slippage_bps: slippage_bps.min(500), // hard cap at 5%
+            slippage_bps: slippage_bps.min(500),
         }
     }
 
@@ -103,9 +103,10 @@ impl FlashSwapBuilder {
                 0u64
             };
 
-            // Build discriminator-prefixed instruction data.
-            // Format: [discriminator:1] [amount_in:8 LE] [min_out:8 LE] [flags:1]
-            let mut data = vec![build_swap_discriminator(edge.dex)];
+            // Build instruction data: [discriminator:1] [amount_in:8 LE] [min_out:8 LE] [flags:1]
+            let discriminator = build_swap_discriminator(edge.dex);
+            let mut data = Vec::with_capacity(18);
+            data.push(discriminator);
             data.extend_from_slice(&position_lamports.to_le_bytes());
             data.extend_from_slice(&min_out.to_le_bytes());
             data.push(0x01u8); // flags: bit 0 = exact_in mode
@@ -114,11 +115,10 @@ impl FlashSwapBuilder {
 
             trace!(
                 hop = i,
-                dex = %edge.dex,
+                dex = ?edge.dex,
                 program_id = %program_id,
                 amount_in = position_lamports,
                 min_out,
-                slippage_bps = self.slippage_bps,
                 is_final,
                 "Building swap instruction"
             );
@@ -129,11 +129,7 @@ impl FlashSwapBuilder {
                 min_out_lamports: min_out,
                 description: format!(
                     "Swap {} → {} on {} (hop {}/{})",
-                    edge.from,
-                    edge.to,
-                    edge.dex,
-                    i + 1,
-                    n
+                    edge.from, edge.to, edge.dex, i + 1, n
                 ),
             });
         }
@@ -149,6 +145,7 @@ impl Default for FlashSwapBuilder {
 }
 
 /// Return the canonical on-chain program ID for a given DEX.
+/// Panics on unknown DEX (should never happen if `Dex` enum is exhaustive).
 pub fn dex_program_id(dex: Dex) -> &'static str {
     match dex {
         Dex::Raydium => RAYDIUM_AMM_PROGRAM,
@@ -156,6 +153,9 @@ pub fn dex_program_id(dex: Dex) -> &'static str {
         Dex::Meteora => METEORA_DLMM_PROGRAM,
         Dex::Phoenix => PHOENIX_PROGRAM,
         Dex::JupiterV6 => JUPITER_V6_PROGRAM,
+        // Add more as supported:
+        // Dex::RaydiumClmm => RAYDIUM_CLMM_PROGRAM,
+        // Dex::MeteoraDamm => METEORA_DAMM_PROGRAM,
     }
 }
 
@@ -163,9 +163,9 @@ pub fn dex_program_id(dex: Dex) -> &'static str {
 ///
 /// Matches the actual on-chain instruction selectors:
 /// - Raydium AMM v4:  0x09 = SwapBaseIn
-/// - Orca Whirlpool:  0xE4 = swap (first byte of Anchor 8-byte discriminator)
+/// - Orca Whirlpool:  0xE4 = swap (first byte of Anchor discriminator)
 /// - Meteora DLMM:    0xF6 = swap
-/// - Phoenix:         0x0A = new_order (market buy/sell)
+/// - Phoenix:         0x0A = new_order
 /// - Jupiter V6:      0xE5 = route
 fn build_swap_discriminator(dex: Dex) -> u8 {
     match dex {
@@ -223,8 +223,8 @@ mod tests {
         let builder = FlashSwapBuilder::new();
         let path = two_hop_path();
         let instructions = builder.build(&path, 1_000_000);
-        // First hop (non-final): min_out = 0
         assert_eq!(instructions[0].min_out_lamports, 0);
+        assert_eq!(instructions[1].min_out_lamports, 1_000_000);
     }
 
     #[test]
@@ -233,7 +233,6 @@ mod tests {
         let path = two_hop_path();
         let position = 1_000_000u64;
         let instructions = builder.build(&path, position);
-        // Final hop: min_out = position (break-even floor)
         assert_eq!(instructions.last().unwrap().min_out_lamports, position);
     }
 
@@ -247,32 +246,28 @@ mod tests {
     }
 
     #[test]
-    fn no_stub_strings_in_program_ids() {
-        let builder = FlashSwapBuilder::new();
-        let path = two_hop_path();
-        let instructions = builder.build(&path, 1_000_000);
-        for instr in &instructions {
-            assert!(!instr.program_id.contains("stub"), "Found stub program ID");
-        }
-    }
-
-    #[test]
     fn instruction_data_has_correct_length() {
         let builder = FlashSwapBuilder::new();
         let path = two_hop_path();
         let instructions = builder.build(&path, 1_000_000);
         for instr in &instructions {
-            // 1 byte discriminator + 8 bytes amount_in + 8 bytes min_out + 1 flags = 18
+            // 1 (discriminator) + 8 (amount_in) + 8 (min_out) + 1 (flags) = 18 bytes
             assert_eq!(instr.data.len(), 18);
         }
     }
 
     #[test]
     fn all_dex_program_ids_are_real() {
-        for dex in [Dex::Raydium, Dex::Orca, Dex::Meteora, Dex::Phoenix, Dex::JupiterV6] {
+        for dex in [
+            Dex::Raydium,
+            Dex::Orca,
+            Dex::Meteora,
+            Dex::Phoenix,
+            Dex::JupiterV6,
+        ] {
             let pid = dex_program_id(dex);
             assert!(!pid.contains("stub"), "DEX {dex:?} has stub program ID");
-            assert!(pid.len() >= 32, "Program ID too short: {pid}");
+            assert!(pid.len() >= 32, "Program ID too short for {dex:?}: {pid}");
         }
     }
 }
